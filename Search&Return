@@ -1,18 +1,34 @@
 from bs4 import BeautifulSoup
+import PyPDF2
 import requests
 import time
 import numpy as np
 import pandas as pd
+import os
+import re
 
 from selenium import webdriver
 # This allows you to use special keys like return
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 
+download_path = "/Users/GlassShark1/Python/"
+
+# These options ensure pdfs are downloaded as opposed to just opening in the web viewer, so you are able to 
+# work with them
+options = webdriver.ChromeOptions()
+options.add_experimental_option('prefs',
+{
+"download.default_directory": download_path, #Change default directory for downloads
+"download.prompt_for_download": False, #To auto download the file
+#"download.directory_upgrade": True,
+"plugins.always_open_pdf_externally": True #It will not show PDF directly in chrome
+})
+
 # Defines what 'drives' the browser you are going to use to do the work. Needs the path
 # Macbook didn't trust it, had to download and move file to local/bin manually then open to get to work
-# This opens a chrome window to use
-driver = webdriver.Chrome('/usr/local/bin/chromedriver')
+# This opens a chrome window to use, with the options you specified above
+driver = webdriver.Chrome('/usr/local/bin/chromedriver',options=options)
 
 list_of_perms =[]
 
@@ -23,43 +39,47 @@ linkroot = link.partition('online-applications')[0]
 linkroot = linkroot[:-1] #removes trailing /
 print(linkroot)
 
-def nav_to_page(link):
+def get_search_perameters():
     
+    global case_dec, from_search, to_search, dev_type
+    
+    case_dec = "Refused"
+    from_search = "30/01/2022"
+    to_search = "30/01/2023"
+    dev_type = "Changes of Use"
+
+def nav_to_page(link):
     page = link
     # Specifies which webpage you want the driver to get
     driver.get(page)
     print(driver.title)
 
 def set_html(link):
-    
     # Sets html variable as the returned results page
     html = driver.page_source
     return html
 
-def set_soup(link):
-        
+def set_soup(link):  
     # Create an instance of the BS, define the html to use and how to open it (lxml module)
     soup = BeautifulSoup(html, 'lxml')
     return soup
 
+def find_elements():
+    global CaseDecSearch, FromSearch, ToSearch, DevTypeSearch, SearchButton
+    
+    # search_bar = driver.find_element(By.NAME,"q")
+    CaseDecSearch = driver.find_element(By.NAME,"searchCriteria.caseDecision")
+    FromSearch = driver.find_element(By.NAME,"date(applicationDecisionStart)")
+    ToSearch = driver.find_element(By.NAME,"date(applicationDecisionEnd)")
+    DevTypeSearch =driver.find_element(By.NAME,"searchCriteria.developmentType")
+    SearchButton = driver.find_element(By.XPATH,'//*[@id="advancedSearchForm"]/div[4]/input[2]')
 
-
-nav_to_page(link)
-html = set_html(link)
-soup = set_soup(link)
-
-# search_bar = driver.find_element(By.NAME,"q")
-CaseDecSearch = driver.find_element(By.NAME,"searchCriteria.caseDecision")
-FromSearch = driver.find_element(By.NAME,"date(applicationDecisionStart)")
-ToSearch = driver.find_element(By.NAME,"date(applicationDecisionEnd)")
-DevTypeSearch =driver.find_element(By.NAME,"searchCriteria.developmentType")
-SearchButton = driver.find_element(By.XPATH,'//*[@id="advancedSearchForm"]/div[4]/input[2]')
-
-CaseDecSearch.send_keys("Refused")
-FromSearch.send_keys('30/01/2022')
-ToSearch.send_keys('30/01/2023')
-DevTypeSearch.send_keys('Changes of Use')
-SearchButton.click()
+def send_filters():
+    CaseDecSearch.send_keys(case_dec)
+    FromSearch.send_keys(from_search)
+    ToSearch.send_keys(to_search)
+    DevTypeSearch.send_keys(dev_type)
+    SearchButton.click()
 
 def find_next_page():
     
@@ -106,12 +126,16 @@ def search_page():
         DecDate = "/".join(meta[6:9])
         # this turns a hyperlink path and label into text, splits it out to isolate the link, then trims off excess code)
         linky = str(card.a).split()[1][6:-2]
-        # to. complete the link, the root is added and a spurious section is replaced
+        # to complete the link, the root is added and a spurious section is replaced
         linky2 = (linkroot + linky).replace('amp;','')
-        
-        
-        details_list = [Ref,address,description,DecDate,linky2]
+        # Reasons for refusal to be added later once a df
+        reasons = ''
+        # Creates a list of details to be added to a dataframe later as a record
+        details_list = [Ref,address,description,DecDate,linky2,reasons]
+        # Add
         list_of_perms.append(details_list)
+        
+        
         
         print(Ref)
         print(address)
@@ -138,31 +162,6 @@ def run_search():
         except:
             print('Search concluded')
             break
-
-# This is the initial search on the first page of results
-search_page()
-
-run_search()
-
-print('done')
-# Create the pandas DataFrame
-df = pd.DataFrame(list_of_perms, columns = ['Ref', 'Address', 'Description','DecDate','Link'])
-
-'''TO DO
-
-
-HERE IS THE PART WHERE YOU WOULD CYCLE THROUGH LINKS YOU WANT TO LOOK IN DOCUMENTS FOR
-
-
-
-
-'''
-
-link = 'https://planning.cornwall.gov.uk/online-applications/applicationDetails.do?keyVal=RKCKRVFGHZT00&activeTab=summary'
-
-nav_to_page(link)
-html = set_html(link)
-soup = set_soup(link)
 
 def Documents_Tab():
     
@@ -198,144 +197,233 @@ def Documents_Tab():
         docs_dict[title] = doc_link
     return docs_dict
 
-docs_dict = Documents_Tab()
-
-doctitle = 'APPLICATION FORM'
-
 def search_for_doc_and_open(doctitle):
     for k,v in docs_dict.items():
+        # cycle the table titles until you match the title you are looking for, then click to download
         if k == doctitle:
+            # this clicks the icon to download the pdf
             v.click()
+            # this gets the filename from the link path, splitting the link out and taking the last entry
+            filename = v.get_attribute('href').split('/')[-1]
+            print('doc to open =' + filename)
+            return filename
 
-search_for_doc_and_open(doctitle)
+def get_substring(start,end,text,keepstart, keepend):
+    
+    # find the footer start and end positions so you can remove the substring
+    if keepstart ==True:
+        start = text.find(start) # returns start of the start string
+    else:
+        start =text.find(start) + len(start) # if start string not needed, start from end of it
+    
+    if keepend == True:
+        end = text.find(end) + len(end) # add letters of string to keep it in the substring,
+    else:
+        end = text.find(end)
+    
+    sub = text[start : end] # defines footer as slice of string
+    
+    return sub
 
+def gather_data_from_doc():
+    
+    for link in df["Link"]:
+        nav_to_page(link)
+        html = set_html(link)
+        soup = set_soup(link)
+        docs_dict = Documents_Tab()
+        filename = search_for_doc_and_open(doctitle)
 
+        # Open the file you just downloaded by it's filename
+        open_path = download_path + filename
 
+        # creating a pdf file object
+        pdfFileObj = open(open_path, 'rb')
 
+        # creating a pdf reader object
+        pdfReader = PyPDF2.PdfFileReader(pdfFileObj)
 
+        # printing number of pages in pdf file
+        num_of_pgs = pdfReader.numPages
 
+        # create a full doc of text with all pages
+        full_doc = ''
+        # create a dictionary of page numbers and page text
+        page_dict ={}
+        # for each page, assign a page number for reference
+        for i in range(1,num_of_pgs+1):
+            # print(i)
+            string_pg = str(i)
+            # create page objects (numbers here (i) start from zero, so i=0 is page 1)
+            page_dict[string_pg] = pdfReader.getPage(i-1).extractText()
 
+        # Creates text for all pages together
+        for k,v in page_dict.items():
+            string_pg = k
+            # create full text from all pages by adding iteratively
+            full_doc += page_dict[string_pg]
 
+        # define first strings to remove from the doc
+        first_removals = ['REFULZ','\n']
+        for thing in first_removals:
+            full_doc = full_doc.replace(thing,'')
 
+        # define the footer from start, end, text and whether or not to return the start and end strings in the result
+        footer = get_substring('DATED:','Officer)',full_doc,True,True)
+        
+        #----------------------------TO DO--------------------------------
+        # NEED TO ACCOUNT FOR ALL POSSIBLE FOOTERS. One failed as was Service Director Planning and Sustainable Development, not officer
+        
+        if footer == '':
+            footer = get_substring('DATED:','Director Planning and Sustainable Development',full_doc,True,True)
+        #-----------------------------------------------------------------
+        
+        # remove all instances of the footer from the doc
+        full_doc = full_doc.replace(footer,'')
 
+        # first identify the perm ref from it's position in a string
+        perm_ref = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ','REASONS:', full_doc,False,False)
+        print(perm_ref)
+        perm_ref = perm_ref.replace(' ', '')
 
+        # then remove the subheading from all pages
+        schedule = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ','REASONS:', full_doc,True,False)
 
+        print(schedule)
+        full_doc = full_doc.replace(schedule,'')
+        # define the footer from start, end, text and exclude the end string as it marks end of reasons
+        refusal_reasons = get_substring('REASONS:','RELEVANT PLANNING',full_doc,False,False)
+        refusal_reasons
 
+        #df.loc[df['UC_Comp_Check'] == True, 'Max_Dec_Date'] = base_date
+        df.loc[df['Ref'] == perm_ref, 'RefusalReasons'] = refusal_reasons
 
+        # closing the pdf file object
+        pdfFileObj.close()
+        
+        if filename != '':
+            os.remove(open_path)
 
+get_search_perameters()
 
+nav_to_page(link)
+html = set_html(link)
+soup = set_soup(link)
 
+find_elements()
 
+send_filters()
 
+# This is the initial search on the first page of results
+search_page()
 
+run_search()
 
+# Create the pandas DataFrame for a single permission
+df = pd.DataFrame(list_of_perms, columns = ['Ref', 'Address', 'Description','DecDate','Link','RefusalReasons'])
 
+"""------------------------------TO DO---------------------------------"""
+# Looks like the doc title here is always the same, tied to the doc name like 'Refusal'
+# Make this a dictionary so it doesn't need an input besides the one already given
 
+doctitle = 'REFULZ - REFUSAL NOTICE'
 
+for link in df["Link"]:
+    
+    print(link)
+    nav_to_page(link)
+    html = set_html(link)
+    soup = set_soup(link)
+    docs_dict = Documents_Tab()
+    filename = search_for_doc_and_open(doctitle)
 
+    # Open the file you just downloaded by it's filename
+    open_path = download_path + filename
+    print(open_path)
 
+    # wait for 5 seconds so the file you want to open is there before you try and open it
+    time.sleep(35)
+    
+    # creating a pdf file object
+    pdfFileObj = open(open_path, 'rb')
 
+    # creating a pdf reader object
+    pdfReader = PyPDF2.PdfFileReader(pdfFileObj)
 
+    # printing number of pages in pdf file
+    num_of_pgs = pdfReader.numPages
 
+    # create a full doc of text with all pages
+    full_doc = ''
+    # create a dictionary of page numbers and page text
+    page_dict ={}
+    # for each page, assign a page number for reference
+    for i in range(1,num_of_pgs+1):
+        # print(i)
+        string_pg = str(i)
+        # create page objects (numbers here (i) start from zero, so i=0 is page 1)
+        page_dict[string_pg] = pdfReader.getPage(i-1).extractText()
 
+    # Creates text for all pages together
+    for k,v in page_dict.items():
+        string_pg = k
+        # create full text from all pages by adding iteratively
+        full_doc += page_dict[string_pg]
 
+    # define first strings to remove from the doc
+    first_removals = ['REFULZ','\n']
+    for thing in first_removals:
+        full_doc = full_doc.replace(thing,'')
 
-                
+    # define the footer from start, end, text and whether or not to return the start and end strings in the result
+    footer = get_substring('DATED:','Officer)',full_doc,True,True)
+
+    # remove all instances of the footer from the doc
+    full_doc = full_doc.replace(footer,'')
+
+    # first identify the perm ref from it's position in a string
+    perm_ref = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ','REASONS:', full_doc,False,False)
+    print(perm_ref)
+    perm_ref = perm_ref.replace(' ', '')
+
+    # then remove the subheading from all pages
+    schedule = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ','REASONS:', full_doc,True,False)
+
+    print(schedule)
+    full_doc = full_doc.replace(schedule,'')
+    # define the footer from start, end, text and exclude the end string as it marks end of reasons
+    refusal_reasons = get_substring('REASONS:','RELEVANT PLANNING',full_doc,False,False)
+    refusal_reasons
+
+    df.loc[df['Ref'] == perm_ref, 'RefusalReasons'] = refusal_reasons
+
+    # closing the pdf file object
+    pdfFileObj.close()
+    
+    #if filename != '':
+    #    os.remove(open_path)
+
+for refr in df['RefusalReasons']:
+    print(refr)
+    print('')
+
+def add_perameters_to_df():
+
+    df["CaseDecSearch"] = case_dec
+    df["FromSearch"] = from_search
+    df["ToSearch"] = to_search
+    df["DevTypeSearch"] = dev_type
+
+add_perameters_to_df()
+
+df
+
+def export_csv():
+    from pathlib import Path  
+    filepath = Path(download_path + 'COU_df.csv')  
+    #filepath.parent.mkdir(parents=True, exist_ok=True)  
+    df.to_csv(filepath) 
+
+export_csv()
 
 driver.close()
-
-#.text takes the actual html code as opposed the return code for connection to the site
-# html_text = requests.get(SearchPage).text
-#SearchButton.send_keys(Keys.RETURN)
-#CaseDecSearch.clear()
-
-# This provides the basic root url to later add directions to a specific page
-# It takes the current url, splits into into before the text and after, and returns the first value to start the link
-# linkroot = str(driver.current_url).partition('online-applications')[0]
-
-
-
-
-
-'''def Documents_Tab OLD():
-    
-    
-    
-    # Create a list of documents for each permission
-    list_of_docs = []
-
-    #Identify the button to click to open the documents page
-    DocumentsTab = driver.find_element(By.ID,"tab_documents")
-
-    DocumentsTab.click()
-
-    # Identifies the table of documents by it's element ID
-    docs_tbl = driver.find_element(By.ID,"Documents")
-
-    # Read the content of the table as text
-    tbl_content = docs_tbl.text
-
-    # split the content by new lines, returning a list of each rows details (containing all details in long string)
-    smth = tbl_content.split('\n')
-
-    # Get rid of the header row of the table
-    smth = smth[1:]
-
-    # Create a count of upper case letters in a record
-    count_upper = 0
-
-    # for each record in the table (all the cell values together), iterate over the record until you reach two 
-    # letters capitalised together (document titles are capitalised).
-    # Return the index number of where the document title starts within the string
-
-    for record in smth:
-
-        while count_upper < 2:
-
-            for i in range(len(record)):
-                character = record[i]
-
-                if character.isupper() and character.isnumeric()==False:
-                    count_upper +=1
-                else:
-                    count_upper = 0
-
-                if count_upper == 2:
-                    doc = record[i-1:]
-                    print('this is the document name: ' + doc)
-                    list_of_docs.append(doc)
-                    # this is where code to test document names would go
-    return list_of_docs'''
-
-"""# Create a list of documents for each permission
-list_of_docs = []
-
-#Identify the button to click to open the documents page
-DocumentsTab = driver.find_element(By.ID,"tab_documents")
-
-DocumentsTab.click()
-
-# Identifies the table of documents by it's element ID
-docs_tbl = driver.find_element(By.ID,"Documents")
-
-# Read the content of the table as text
-tbl_content = docs_tbl.text
-
-# split the content by new lines, returning a list of each rows details (containing all details in long string)
-smth = tbl_content.split('\n')
-
-no_rows = len(smth)
-
-# Creates a dictionary of doc names and their link buttons by iterating through rows
-docs_dict = {}
-# gather all the doc names using the number of records you know there are for the range of rows
-# ignore the first row as it's a header. Table row references start at 1
-for i in range(2,no_rows+1):
-    print(str(i))
-    # Gets the title of the doc
-    #td[7] == the column of the table that contains the image to click to open the document
-    #tr[2] == the table row references (includes header @ 1)
-    title = driver.find_element(By.XPATH,'//*[@id="Documents"]/tbody/tr[' + str(i)+ ']/td[6]').text
-    # Gets the link for the doc from the icon on the last row
-    doc_link = driver.find_element(By.XPATH,'//*[@id="Documents"]/tbody/tr[' + str(i)+ ']/td[7]/a')
-    docs_dict[title] = doc_link"""
