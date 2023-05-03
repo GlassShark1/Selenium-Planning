@@ -1,0 +1,333 @@
+import pandas as pd
+import numpy as np
+import spacy
+import contextualSpellCheck
+import time # to time script
+import re # regular expression (regex) module
+import string
+import math
+
+import en_core_web_lg # small corpus of english words and lemma relationships
+
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.pipeline import Pipeline
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.feature_extraction.text import TfidfTransformer
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+
+#import nltk
+#import matplotlib.pyplot as plt # not yet used
+#import seaborn as sns # not yet used
+
+nlp = spacy.load("en_core_web_lg") 
+
+# get the start time
+st = time.time()
+
+# load the dataframe from an excel file. For now keep an unedited copy and one to manipulate
+og_df = pd.read_excel("/Users/GlassShark1/Python/Refusals Data/All Refusals 2019-2022.xlsx")
+
+df = og_df.copy()
+
+def jupyter_display_max(max_rows):
+    # set display so you can see all columns, all rows and all cell contents (up to 1k characters)
+    pd.options.display.max_columns = None
+    pd.set_option('display.max_rows', max_rows)
+    pd.options.display.max_colwidth = 1000
+
+def drop_col_by_labels(df,column_names):
+    for col in column_names:
+        if col in df.columns:
+            df = df.drop(col, axis=1)
+    return df
+
+# set JN to display full extent of data
+jupyter_display_max(df.shape[0])
+
+def cut_df_down(df):
+    
+    #Define attribute columns with data on the permission itself
+    info_cols = ['Unnamed: 0', 'Address', 'docfragment', 'file_ext', 'filename', 'Decision', 'Link','FromSearch', 'ToSearch', 'AppTypeFrag']
+    
+    # Define columns to keep for the NLP work
+    keep_cols = ['Ref', 'Description', 'DevType','DecDate', 'RefusalReasons']
+    
+    # find any other columns not in the above categories to remove - these will be those already manually categorised
+    x_train_cols = [col for col in df.columns if col not in info_cols and col not in keep_cols]
+    
+    # for unsupervised model, remove unneeded cols + manually categorised data
+    remove_cols = info_cols + x_train_cols
+    
+    # remove unwanted columns
+    df = drop_col_by_labels(df,remove_cols)
+    
+    return df
+
+def cleaning_text(text):
+    
+    
+    # replaces instances of more than 1 space with a single space (WORKING)
+    text = re.sub(' +', ' ', text)
+    
+    # tried a spell check here but i don't think it works well. words substitutes sketchy...
+    # think i do need something here though, oov later returns ones that could be corrected
+    # also seems to return odd '.' things - e.g "2019. The" is oov?
+    # text = text._.outcome_spellCheck
+    
+    return text
+
+"""
+THOUGHTS ON POSSIBLE NEXT STEPS
+
+0) DO I NEED SEPERATE SCRAPER TO PULL IN APPTYPE? Concerns re missing variables - might be that apptypes need
+grouping for analysis (housing seperately, trees seperately etc). Will check a report straight out of the db
+can't be created first.
+1) SPELL & GRAMMAR CHECK FOR REFUSAL REASONS - tried 1 - results not great. Maybe TextBlob? How to apply these
+steps? Pipline? Not sure how that works in practice (so i can check bits are working)
+2) REMOVE INSTANCES OF MORE THAN 1 SPACE - in place
+3) FOR SENT IN SENTS REMOVE NUMERIC PREFIX (STARTS WITH 1. OR 2. ETC)
+4) USE REGEX TO FIND PERMISSION REFERENCES (AND POSSIBLY ASSIGN THEM A NAMED ENTITY SO SPACY KNOWS
+HOW TO HANDLE)? HOW DOES SPACY CATEGORISE NATURALLY?
+5) USE REGEX TO FIND NEIGHBOURHOOD PLAN NAMES, IDENTIFY NPPF AND LOCAL PLAN NAME VARIATIONS AND REPLACE (+ NER?)
+PhraseMatcher to add NP names etc with a single token? Tried an OOV finder but it took ages and i stopped it
+6) CONSIDER IF REFERENCES TO PARAGRAPH NUMBERINGS AND POLICY NUMBERINGS CAN BE IDENTIFIED AND UTILISED
+7) REMOVE STOPWORDS AND PUNCTUATION?
+8) TF-IDF
+9) ('classifier', MultinomialNB())
+10) Concerns re balanced data - too few examples of some reasons?
+11) 
+
+
+
+"""
+
+# chop the df down to only the bits you will use
+df = cut_df_down(df)
+
+# remove spaces (spell check TBD)
+df['cleaned'] = df['RefusalReasons'].apply(cleaning_text)
+
+df
+
+doc = nlp(smth)
+
+# This is a way of getting around a max character limit for nlp when looking at the whole doc
+# chunk_dict will end up a numbered dictionary with the full text divided into chunks small enough to use
+chunk_dict ={}
+max_limit = 1000000
+
+# returns a list of words out of the spaCy vocabulary when passed in text
+def find_oov(text):
+    doc = nlp(text)
+    oov_words = [token.text for token in doc if token.is_oov]
+    return oov_words
+
+# Figures out how many chunks of text you'll need and how to divide it - makes the dictionary to use
+def big_buckets(col):
+    
+    # create a huge string of all text to search for tokens not in dictionary or find phrase matches
+    # that we might want to add to vocabulary more easily
+    whole_doc = ''.join(df[col].tolist())    
+
+    # nlp has a max limit of 1000000, so first divide the length by this to get the number of buckets you 
+    # will need to do the proceedure on each bucket
+    portions = math.ceil(len(whole_doc)/1000000)
+
+    # for every portion needed, find out the index positions needed to divide the doc into so many chunks
+    for portion in range(0,portions):
+
+        # if it's the first portion, grab everything starting from index 0
+        if portion == 0:
+            chunkstart = 0
+        # else the start position will be multiples of the limit (chunk3 will start at 3000000)
+        else:
+            chunkstart = max_limit * portion
+
+        # the end of the chunk will always be the start plus the max limit
+        chunkend = chunkstart + max_limit
+
+        chunk_dict[portion] = whole_doc[chunkstart:chunkend]
+
+def get_all_oovs():
+    # creates a list to append out of vocab lists on each chunk to
+    all_oovs = []
+    for k,v in chunk_dict.items():
+        # returns list of oov tokens for each chunk
+        oovs = find_oov(chunk_dict[k])
+        # appends list to list of lists
+        all_oovs.append(oovs)
+        # flatten the list of lists, so it is just one list with one level
+        flat_oov_list = [item for sublist in all_oovs for item in sublist]
+        # make this a set to get rid of duplicates
+        set_flat_oov = set(flat_oov_list)
+        len(set_flat_oov)
+        return set_flat_oov
+
+big_buckets('cleaned')
+
+oovs = get_all_oovs()
+
+oovs
+
+test = df['cleaned'][1]
+
+doc
+
+def remove_spaces_at_ends(text):
+    if text[0] == " ":
+        text = text[1:]
+    if text[-1] == " ":
+        text = text[:-1]
+    return text
+
+def remove_numeric_bullets(text):
+    
+    # get rid of single numbers at the begining of sentences
+    if text[0].isnumeric() and text[1].isnumeric() == False:
+        text = text[1:]
+    if text[0] == ".":
+        text = text[1:]
+    if text[0] == " ":
+        text = text[1:]
+    return text
+
+def do_x_by_sent(text):
+    text = nlp(text)
+    for sent in text.sents:
+        print(sent)
+        print('\n')
+        print('\n')
+    return text
+
+test = remove_spaces_at_ends(test)
+
+test = remove_numeric_bullets(test)
+
+test = df['cleaned'][9]
+
+doc = nlp(test)
+
+for sent in doc.sents:
+    print(sent)
+    print('/n')
+    print('/n')
+    
+    for i, token in enumerate(sent):
+        
+        if token.pos_ == 'NUM':
+            print(i, token, token.pos_)
+            j = i + 1
+            while j < len(sent):
+                if sent[j].pos_ =='PUNCT':
+                    print(j, sent[j], sent[j].pos_)
+                    k = j + 1
+                    while k < len(sent):
+                        if sent[k].pos_ == 'CCONJ':
+                            policies_list = sent[i:k]
+                            print(policies_list)
+                # SOMEHOW NEED TO KEEP FOLLOWING THE CODE NUM, PUNCT, NUM, PUNCT CCONJ NUM - Recursion??
+    
+    #for ent in doc.ents:
+    #    print(ent.text, " | ", ent.label_, " | ", spacy.explain(ent.label_))
+
+span = doc[i,k]
+
+for token in doc:
+    print(token, token.pos_)
+
+
+
+# from this point it's various things i've tried
+
+# apply the find_oov function to the "text" column of the dataframe
+# TRIED THIS AND IT TOOK AGEEEEEEEEEES (NEVER FINISHED)
+oov_words = df["RefusalReasons"].apply(find_oov)
+
+# initiate a list to contain all matches from database
+oov_list =[]
+# for every permission, find matches and add them to the overall list. From here could be assigned NER?
+for cell in df['RefusalReasons']:
+    doc = nlp(cell)
+    perm_matches = re.findall(perm_pattern,cell)
+    for match in perm_matches:
+        all_perm_matches.append(match)
+
+pattern = r'\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:Neighbourhood\s+(?:Development\s+)?Plan)\b(?:\s+\((?:\d{4}|\d{1,2}\s*(?:-|to)\s*\d{2,4}|[A-Za-z]+)\))?'
+text = "St Ives Neighbourhood Plan 2016, Falmouth Neighbourhood Development Plan 2019 to 2030, St Just Neighbourhood Development Plan (words), Penzance Neighbourhood Development Plan (2016-2030)"
+
+matches = re.findall(pattern, text)
+
+print(matches)
+
+NPD_pattern = r'\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:N(?:eighbourhood)?\s*(?:D(?:evelopment)?\s*)?P(?:lan)?|NDP)\b(?:\s+\([^\)]+\))?(?:\s+\d{4}(?:\s*(?:to|-)\s*\d{4})?)?'
+
+matches = re.findall(NPD_Regex, text)
+
+print(matches)
+
+# Identify bespoken tokens/phrases
+    perm_pattern = r'(?i)(?:PA)?\d{2}[/|_]\d{5}' # e.g. PA12/12345
+    # Identify Neighbourhood Plan documents for specific geographies (e.g. 'Crowan Neighbourhood Plan 2016')
+    NPD_pattern = r'\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:N(?:eighbourhood)?\s*(?:D(?:evelopment)?\s*)?P(?:lan)?|NDP)\b(?:\s+\([^\)]+\))?(?:\s+\d{4}(?:\s*(?:to|-)\s*\d{4})?)?'
+    # Identify all instances of Cornwall Local Plan Policies 2016
+    #CLP_pattern = r'(Cornwall Local Plan Strategic Policies|Cornwall Local Plan|CLP) (?:\d{4}\s*-\s*\d{4}|\d{4}?)?'
+    CLP_pattern = r'(Cornwall Local Plan Strategic Policies|Cornwall Local Plan|CLP)\s*((\(\d{4}(?:\s*-\s*\d{4})?\))|\d{4}\s*-\s*\d{4}|\d{4})?'
+    # Identify all instances of NPPF / National Planning Policy Framework
+    
+    # Try to identify lists of paragraphs / lists of policies by number??
+    
+    """
+    perm_matches = re.findall(perm_pattern,text)
+    NDP_matches = re.findall(NPD_pattern,text)
+    CLP_matches = re.findall(CLP_pattern,text)
+    
+    
+    
+    return CLP_matches"""
+    
+
+import spacy
+from spacy.tokens import Doc, Span, Token
+
+nlp = spacy.load("en_core_web_sm")
+
+def merge_cardinal_after_org(doc):
+    #for index position and token name (enumerate allows you to keep track of index positions)
+    for i, token in enumerate(doc):
+        # if the token is an organisation
+        if token.ent_type_ == "ORG":
+            j = i + 1
+            # if the next token (found by j being 1 more than the original) is a date <len ensures it doesn't go out of bounds
+            while j < len(doc) and doc[j].ent_type_ == "CARDINAL":
+                j += 1
+            if j > i + 1:
+                org_span = Span(doc, i, j, label="ORG")
+                doc.ents = list(doc.ents) + [org_span]
+                for k in range(i, j):
+                    doc[k].ent_iob_ = "I"
+                    doc[k].ent_type_ = "ORG"
+    return doc
+
+nlp.add_pipe("merge_cardinal_after_org")
+
+text = "Cornwall Local Plan 2016"
+doc = nlp(text)
+
+for ent in doc.ents:
+    print(ent.text, ent.label_)
+
+# initiate a list to contain all matches from database
+all_perm_matches =[]
+# for every permission, find matches and add them to the overall list. From here could be assigned NER?
+for cell in df['RefusalReasons']:
+    doc = nlp(cell)
+    perm_matches = re.findall(perm_pattern,cell)
+    for match in perm_matches:
+        all_perm_matches.append(match)
+
+text = df['RefusalReasons'][0]
+
+text = nlp(text)
+
+text = text._.outcome_spellCheck
