@@ -1,0 +1,752 @@
+# NOTE - SLEEP/HIBERNATE WILL CRASH THE SCRIPT AND CAN LOCK A LAPTOP
+# TURN LAPTOP SETTINGS TO NEVER SLEEP WHILE RUNNING 
+# THIS VERSION LOOPS THROUGH AVAILABLE DEV_TYPES
+
+from bs4 import BeautifulSoup
+import PyPDF2
+import requests
+import time
+import numpy as np
+import pandas as pd
+import os
+import re
+import random
+import textract
+
+from selenium import webdriver
+# This allows you to use special keys like return
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import Select
+
+# lets you see the whole df when looking in jupyter nb\n",
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+
+# Grab Currrent Time Before Running the Code
+start = time.time()
+
+download_path = "/Users/GlassShark1/Python/PDFS/"
+
+# These options ensure pdfs are downloaded as opposed to just opening in the web viewer, so you are able to 
+# work with them
+options = webdriver.ChromeOptions()
+options.add_experimental_option('prefs',
+{
+"download.default_directory": download_path, #Change default directory for downloads
+"download.prompt_for_download": False, #To auto download the file
+#"download.directory_upgrade": True,
+"plugins.always_open_pdf_externally": True #It will not show PDF directly in chrome
+})
+
+# Defines what 'drives' the browser you are going to use to do the work. Needs the path
+# Macbook didn't trust it, had to download and move file to local/bin manually then open to get to work
+# This opens a chrome window to use, with the options you specified above
+driver = webdriver.Chrome('/usr/local/bin/chromedriver',options=options)
+
+'''
+If you need a new version of Chromedriver:
+1) find out your version of chrome - Chrome | About
+2) go to the ChromeDriver pages and select the version: https://chromedriver.chromium.org/downloads
+   (this will be the Mac64 version on current laptop)
+3) unzip the file in the downloads folder
+4) in finder, do Cmd + snift + g to allow you to navigate to binary folder /usr/local/bin
+5) Move the chromedriver file to this folder
+6) In terminal, enter xattr -d com.apple.quarantine /usr/local/bin/chromedriver to allow permissions for it to run
+'''
+
+list_of_perms =[]
+
+link = "https://planning.cornwall.gov.uk/online-applications/search.do?action=advanced"
+# This provides the basic root url to later add directions to a specific page
+# It takes the current url, splits into into before the text and after, and returns the first value to start the link
+linkroot = link.partition('online-applications')[0]
+linkroot = linkroot[:-1] #removes trailing /
+print(linkroot)
+
+def get_file_ext(filename):
+    file_ext = filename.split('.')[-1]
+    print('File ext is: ' + file_ext)
+    return file_ext
+
+def open_file_by_extension(open_path, file_ext):
+    if file_ext == 'pdf':
+        try:
+            full_doc = pdf_read(open_path)
+        except:
+            return ''
+    elif file_ext == 'docx' or file_ext == 'doc':
+        try:
+            full_doc = word_read(open_path)
+        except:
+            return ''
+    elif file_ext == 'rtf':
+        try:
+            full_doc = rtf_read(open_path)
+        except:
+            return ''
+    return full_doc
+
+def word_read(open_path):
+    full_doc = textract.process(open_path)
+    return full_doc
+
+def rtf_read(open_path):
+    print('running rtf read')
+    print(open_path)
+    with open(open_path, 'r') as file:
+        full_doc = file.read()
+    return full_doc
+
+def pdf_read(open_path):
+    
+    print('running pdf read')
+    pdfFileObj = open(open_path, 'rb')
+    # creating a pdf reader object
+    pdfReader = PyPDF2.PdfFileReader(pdfFileObj)
+
+    # printing number of pages in pdf file
+    num_of_pgs = pdfReader.numPages
+
+    # create a full doc of text with all pages
+    full_doc = ''
+    
+    # create a dictionary of page numbers and page text
+    page_dict ={}
+    # for each page, assign a page number for reference
+    for i in range(1,num_of_pgs+1):
+        # print(i)
+        string_pg = str(i)
+        # create page objects (numbers here (i) start from zero, so i=0 is page 1)
+        page_dict[string_pg] = pdfReader.getPage(i-1).extractText()
+        
+    # Creates text for all pages together
+    for k,v in page_dict.items():
+        string_pg = k
+        # create full text from all pages by adding iteratively
+        full_doc += page_dict[string_pg]
+        
+    # closing the pdf file object
+    pdfFileObj.close()
+        
+    return full_doc
+
+def sleepy():
+    # can't get this to work - keeps giving me too many requests error
+    #sleep_secs = random.randint(3, 7)
+    sleep_secs = 30
+    time.sleep(sleep_secs)
+    print('Sleep time: ' + str(sleep_secs) + " seconds")
+
+def get_search_perameters():
+    
+    global case_dec, from_search, to_search, dev_type
+    
+    #Residential apps should be:
+    #'Minor - Dwelling','Largescale Major Dwellings','Minor - Dwelling - PIP apps only','Smallscale Major Dwellings'
+    
+    # 2 types of refusal - "Refused"(several reasons),"Refusal one reason"
+    
+    case_dec = "Refused"
+    from_search = "01/01/2023"
+    to_search = "31/03/2023"
+    dev_type = 'TBD' 
+    
+
+def nav_to_page(link):
+    page = link
+    # Specifies which webpage you want the driver to get
+    driver.get(page)
+    print(driver.title)
+
+def set_html(link):
+    # Sets html variable as the returned results page
+    html = driver.page_source
+    return html
+
+def set_soup(link):  
+    # Create an instance of the BS, define the html to use and how to open it (lxml module)
+    soup = BeautifulSoup(html, 'lxml')
+    return soup
+
+def find_elements():
+    
+    global find_check, Decision, FromSearch, ToSearch, DevType, SearchButton, dropdown_fields,AppType, Ward, Parish, Status, Decision, Appeal_Status, Appeal_Dec, DevType
+    
+    try:
+        Reference = driver.find_element(By.NAME,"searchCriteria.reference")
+        # search_bar = driver.find_element(By.NAME,"q")
+        # Reference = driver.find_element(By.NAME,"searchCriteria.reference")
+        Planning_Portal_Reference = driver.find_element(By.NAME,"searchCriteria.planningPortalReference")
+        Alt_Reference = driver.find_element(By.NAME,"searchCriteria.alternativeReference")
+
+        AppType = driver.find_element(By.NAME,"searchCriteria.caseType")
+        Description = driver.find_element(By.NAME,"searchCriteria.description")
+        Applicant_Name = driver.find_element(By.NAME,"searchCriteria.applicantName")
+        Ward = driver.find_element(By.NAME,"searchCriteria.ward")
+        Parish = driver.find_element(By.NAME,"searchCriteria.parish")
+        Conv_Area = driver.find_element(By.NAME,"searchCriteria.conservationArea")
+        Agent = driver.find_element(By.NAME,"searchCriteria.agent")
+        Status = driver.find_element(By.NAME,"searchCriteria.caseStatus")
+        Appeal_Status = driver.find_element(By.NAME,"searchCriteria.appealStatus")
+        Appeal_Dec = driver.find_element(By.NAME,"searchCriteria.appealDecision")
+        Address = driver.find_element(By.NAME,"searchCriteria.address")
+
+        Decision = driver.find_element(By.NAME,"searchCriteria.caseDecision")
+
+        FromSearch = driver.find_element(By.NAME,"date(applicationDecisionStart)")
+        ToSearch = driver.find_element(By.NAME,"date(applicationDecisionEnd)")
+
+        App_Dec_Start = driver.find_element(By.NAME,"date(appealDecisionStart)")
+        App_Dec_End = driver.find_element(By.NAME,"date(appealDecisionEnd)")
+
+        DevType = driver.find_element(By.NAME,"searchCriteria.developmentType") #Development Type
+        SearchButton = driver.find_element(By.XPATH,'//*[@id="advancedSearchForm"]/div[4]/input[2]')
+        
+        find_check = True
+    except:
+        AppType = ""
+        Ward= ""
+        Parish= ""
+        Status= ""
+        Decision= ""
+        Appeal_Status= ""
+        Appeal_Dec= ""
+        DevType= ""
+        
+        find_check = False
+        
+    dropdown_fields = [AppType, Ward, Parish, Status, Decision, Appeal_Status, Appeal_Dec, DevType]
+    
+    
+
+def get_list_from_dropdown(webelement):
+    
+    # pass in the webelement of a dropdown field on a webpage, and return a list of all options it contains
+    
+    list_of_options = []
+    # Dropdown fields are:
+    # AppType, Ward, Parish, Status, Decision, Appeal_Status, Appeal_Dec, DevType
+    
+    # Identify the dropdown field you want to get options from
+    dropdown_options = Select(webelement)
+    
+    # iterate over dropdown options, add each option to the list
+    for opt in dropdown_options.options:
+        opt_2 = opt.text
+        list_of_options.append(opt_2)
+    
+    return list_of_options
+
+def get_dropdown_options():
+    
+    # Create a dictionary of dropdown fields and their respective options in a list
+    
+    dropdown_opt_dict = {}
+    # AppType, Ward, Parish, Status, Decision, Appeal_Status, Appeal_Dec, DevType
+    dropdown_opt_dict["AppType_Options"] = get_list_from_dropdown(AppType)
+    dropdown_opt_dict["Ward_Options"] = get_list_from_dropdown(Ward)
+    dropdown_opt_dict["Parish_Options"] = get_list_from_dropdown(Parish)
+    dropdown_opt_dict["Status_Options"] = get_list_from_dropdown(Status)
+    dropdown_opt_dict["Decision_Options"] = get_list_from_dropdown(Decision)
+    dropdown_opt_dict["Appeal_Status_Options"] = get_list_from_dropdown(Appeal_Status)
+    dropdown_opt_dict["Appeal_Dec_Options"] = get_list_from_dropdown(Appeal_Dec)
+    dropdown_opt_dict["DevType_Options"] = get_list_from_dropdown(DevType)
+    
+    return dropdown_opt_dict
+
+
+
+def send_filters():
+    Decision.send_keys(case_dec)
+    FromSearch.send_keys(from_search)
+    ToSearch.send_keys(to_search)
+    DevType.send_keys(dev_type)
+    SearchButton.click()
+
+def find_next_page():
+    
+    # Finds the link for the next page of search results if there is one, otherwise returns None. 
+    
+    # Sets html variable as the returned results page
+    html = driver.page_source
+    
+    # Create an instance of the BS, define the html to use and how to open it (lxml module)
+    soup = BeautifulSoup(html, 'lxml')
+    
+    while True:
+        try:
+            # Find the link for the next page to be used after parsing this one
+            Next = soup.find('a',class_='next')['href']
+            Next = linkroot + Next
+            # print('next link is: ' + Next)
+            # break out of the while loop if it finds the next page link
+            return Next
+        except TypeError:
+            print("No next page to find. Ending search")
+            # This should break out of the function completely as it's looped through all pages
+            return None
+
+def search_page():
+    
+    global list_of_perms
+    
+    # Sets html variable as the returned results page
+    html = driver.page_source
+
+    # Create an instance of the BS, define the html to use and how to open it (lxml module)
+    soup = BeautifulSoup(html, 'lxml')
+    
+    # Return a list of 'cards' found by inspecting an element on the webpage. These contain the summary info variables
+    cards = soup.find_all('li',class_='searchresult')
+
+    # if the first page has no cards - e.g.  looks to have gone straight to a single permission page,
+    # get details from there where you can
+    
+    if cards == []:
+        print("cards empty, dvetype: ", dev_type)
+    if soup.find('span',class_='caseNumber') != None:
+        print('soup != None, dev_type = ', dev_type)
+    if soup.find('span',class_='caseNumber') == None:
+        print('Ref == None, deve_type: ', dev_type)
+        
+    if cards == [] and soup.find('span',class_='caseNumber') != None:
+        print('passing double check')
+        # get the whole html tag containing the perm reference
+        Ref = str(soup.find('span',class_='caseNumber'))
+        # get the actual value between the html tags
+        Ref = get_substring(">","</span",Ref,False, False)
+        # get rid of any new lines or whitespace
+        Ref = Ref.replace('\n',"")
+        Ref = Ref.replace(' ','')
+
+        description = str(soup.find_all('span',class_='description'))
+        # get the actual value between the html tags
+        description = get_substring(">","</span",description,False, False)
+        # get rid of any new lines or whitespace
+        description = description.replace('\n',"").strip()
+
+        address = str(soup.find_all('span',class_='address'))
+        # get the actual value between the html tags
+        address = get_substring(">","</span",address,False, False)
+        # get rid of any new lines or whitespace
+        address = address.replace('\n',"").strip()
+
+        DecDate =""
+        linky2 =""
+        reasons = ""
+        Dev_Type = dev_type # this should already be a variable as you are searching by it
+        details_list = [Ref,address,description,DecDate,linky2,reasons,Dev_Type]
+        list_of_perms.append(details_list)
+    
+    for card in cards:
+
+        description = card.a.text.replace('  ','').replace('\n','')
+        address = card.p.text.replace('  ','').replace('\n','')
+        # this takes an element including many things and splits it out so you can find individual attributes
+        meta = card.find('p',class_='metaInfo').text.split()
+        Ref = meta[2].replace('\n','')
+        # this the list from the above split, isolates the decision date fields and concatenates them to a str date
+        DecDate = "/".join(meta[6:9])
+        # this turns a hyperlink path and label into text, splits it out to isolate the link, then trims off excess code)
+        linky = str(card.a).split()[1][6:-2]
+        # to complete the link, the root is added and a spurious section is replaced
+        linky2 = (linkroot + linky).replace('amp;','')
+        # Reasons for refusal to be added later once a df
+        reasons = ''
+        Dev_Type = dev_type
+        # Creates a list of details to be added to a dataframe later as a record
+        details_list = [Ref,address,description,DecDate,linky2,reasons,Dev_Type]
+        # Add
+        list_of_perms.append(details_list)
+        
+        #print(Ref)
+        #print(address)
+        #print(description)
+        #print(DecDate)
+        #print(linky2)
+        #print('')
+
+def search_other_pages():
+    # After an initial results page, this keeps running the main code and opening pages until there
+    # are no more search pages to open
+    while True:
+        try:
+            sleepy()
+            # find the next link on the page if there is one, otherwise return None
+            nextpage = find_next_page()
+            # Open the next page
+            print("nextpage is:  " + str(nextpage))
+            if nextpage != None:
+                #print("This says nextpage doesn't equal none?")
+                driver.get(nextpage)
+                print('Searching Page: ' + str(nextpage))
+                search_page()
+                continue
+            else:
+                break
+        except:
+            print('Search concluded')
+            break
+
+def further_info():
+    
+    #Identify the button to click to open the further info subtab
+    Further_Info_Tab = driver.find_element(By.ID,"subtab_details")
+
+    Further_Info_Tab.click()
+
+    # Identifies the table of details by it's element ID
+    details_tbl = driver.find_element(By.ID,"applicationDetails")
+
+    # Read the content of the table as text
+    tbl_content = details_tbl.text
+
+    # split the content by new lines, returning a list of each rows details (containing all details in long string)
+    smth = tbl_content.split('\n')
+
+    # return the first row containing app type and remove the prefix
+    DevType = smth[0].replace('Application Type ','')
+
+    return DevType
+
+def Documents_Tab():
+    
+    # Creates a dictionary of doc names and their link buttons by iterating through rows
+    docs_dict = {}
+
+    #Identify the button to click to open the documents page
+    DocumentsTab = driver.find_element(By.ID,"tab_documents")
+
+    DocumentsTab.click()
+
+    # Identifies the table of documents by it's element ID
+    docs_tbl = driver.find_element(By.ID,"Documents")
+
+    # Read the content of the table as text
+    tbl_content = docs_tbl.text
+
+    # split the content by new lines, returning a list of each rows details (containing all details in long string)
+    smth = tbl_content.split('\n')
+
+    no_rows = len(smth)
+
+    # gather all the doc names using the number of records you know there are for the range of rows
+    # ignore the first row as it's a header. Table row references start at 1
+    for i in range(2,no_rows+1):
+        print(str(i))
+        # Gets the title of the doc
+        #td[7] == the column of the table that contains the image to click to open the document
+        #tr[2] == the table row references (includes header @ 1)
+        title = driver.find_element(By.XPATH,'//*[@id="Documents"]/tbody/tr[' + str(i)+ ']/td[6]').text
+        # Gets the link for the doc from the icon on the last row
+        doc_link = driver.find_element(By.XPATH,'//*[@id="Documents"]/tbody/tr[' + str(i)+ ']/td[7]/a')
+        docs_dict[title] = doc_link
+    return docs_dict
+
+def search_for_doc_and_open(docs_dict):
+    for docfragment in docs_to_search_for:
+        for k,v in docs_dict.items():
+            # cycle the table titles until you match the title you are looking for, then click to download
+            if docfragment in k:
+                # this clicks the icon to download the pdf
+                v.click()
+                # this gets the filename from the link path, splitting the link out and taking the last entry
+                filename = v.get_attribute('href').split('/')[-1]
+                print('doc to open =' + filename)
+                return filename, docfragment
+
+def get_substring(start,end,text,keepstart, keepend):
+    
+    # find the footer start and end positions so you can remove the substring
+    if keepstart ==True:
+        start = text.find(start) # returns start of the start string
+    else:
+        start =text.find(start) + len(start) # if start string not needed, start from end of it
+    
+    
+    # THIS ANNOYINGLY SIMPLE LINE MAKES SURE YOU DON'T GRAB AN END REFERENCE FOR REFUSAL REASONS THAT
+    # PROCEEDS THE START (E.G. '..for the reasons referenced in the first schdule' text, when 'first schedule' is
+    # hOW YOU DEFINE THE END OF THE REFUSAL REASONS SECTION!!
+    # text = text[start:]
+    
+    
+    if keepend == True:
+        end = text.find(end) + len(end) # add letters of string to keep it in the substring,
+    else:
+        end = text.find(end)
+    
+    sub = text[start : end] # defines footer as slice of string
+    
+    return sub
+
+def add_perameters_to_df():
+
+    df["Decision"] = case_dec
+    df["FromSearch"] = from_search
+    df["ToSearch"] = to_search
+    df["DevType"] = dev_type
+
+def export_csv():
+    from pathlib import Path  
+    filepath = Path(download_path + 'Jan-Mar23 refusals w dev_types.csv') 
+    #filepath.parent.mkdir(parents=True, exist_ok=True)  
+    df.to_csv(filepath) 
+
+def get_first_option_from_dict(key):
+    
+    # first remove 'all' as we don't want to filter by that
+    if "All" in dropdown_opt_dict[key]:
+        dev_type = dropdown_opt_dict[key].remove("All")
+
+    # return first value in a list from a dictionary. Remove value on use
+    try:
+        dev_type = dropdown_opt_dict[key][0]
+        dropdown_opt_dict[key].remove(dropdown_opt_dict[key][0])
+        print(dev_type)
+    except IndexError:
+        dev_type = ""
+        print("no more options in list")
+    
+    print(dev_type, " is being run...")
+    return dev_type
+
+
+
+
+
+
+
+nav_to_page(link)
+html = set_html(link)
+soup = set_soup(link)
+find_elements()
+dropdown_opt_dict = get_dropdown_options()
+# All variables for search but dev_type
+get_search_perameters()
+# get a static list you can iterate over/remove items from to work with in a loop
+option_list = dropdown_opt_dict['DevType_Options']
+if 'All' in option_list:
+    dropdown_opt_dict['DevType_Options'].remove('All')
+
+# FOR TESTING ONLY
+# option_list = [option for option in option_list if option[:5] == 'Minor']
+
+# loop must start with the options here, 
+for item in option_list:
+
+    dev_type = item
+    send_filters()
+    # This is the initial search on the first page of results
+    search_page()
+    search_other_pages()
+    # get on the right page (adv search pg)
+    nav_to_page(link)
+    html = set_html(link)
+    soup = set_soup(link)
+    find_elements() 
+
+# Create the pandas DataFrame for a single permission
+df = pd.DataFrame(list_of_perms, columns = ['Ref', 'Address', 'Description','DecDate','Link','RefusalReasons','Dev_Type'])
+
+"""
+
+
+
+
+IF YOU ARE ONLY AFTER DEV TYPES AND DON'T WANT TO DOWNLOAD / PARSE PDFS, UNCOMMENT EXPORT_CSV BELOW
+
+AND UNCOMMENT THE CELL OF NONSENSE (JUST TO MAKE THE CODE STOP HERE WITHOUT RUNNING THE REST)
+
+
+
+"""
+
+#export_csv()
+
+#typer(kdlflsfjdklsfjdslfjdlkfjdlsfjdklfjd)
+
+"""------------------------------TO DO---------------------------------"""
+# Looks like the doc title here is always the same but differs by app type, tied to the doc name like 'Refusal'
+# Find a better solution to pick out variations of a name
+
+docs_to_search_for = ['REFUSAL','DECISION NOTICE', 'OFFICER REPORT']
+
+# docfragment = 'REFUSAL'
+
+def parse_text():
+    for link in df["Link"]:
+    #for link in test_list: 
+
+        # find the link you've just passed in and check if it's already been dealth with
+        # E.G if there are refusal reasons in the df already or not. If there are, skip over it
+        # This is useful for unexpected issues, you can run the code again from here
+
+        if df.loc[df['Link'] == link, 'RefusalReasons'].iloc[0] != "":
+            print('exiting here')
+            continue
+
+        # Navigate to the permission page and set soup
+        print(link)
+        nav_to_page(link)
+        html = set_html(link)
+        soup = set_soup(link)
+
+        # Get the dev type from the further info tab (so you dont have to rely on input if searching 'All')
+        dev_type = further_info()
+
+        sleepy()
+
+        # Create a dictionary of documents in the table
+        docs_dict = Documents_Tab()
+        # Grab the permission reference from the page
+        perm_ref2 = driver.find_element(By.XPATH,'//*[@id="pa"]/div[3]/div[3]/div[1]/span[1]').text
+        
+        # if it's a known issue - e.g. document PA19/06949 is missing on the webpage, skip
+        if perm_ref2 == 'ABC1234': 
+            continue
+        
+        
+        # from the provided fragmment, identify the doc to open (e.g. contains 'refusal')
+        # do this in order of doc preference, if it can't find one, try the next
+        
+        filename, docfragment = search_for_doc_and_open(docs_dict)
+      
+        
+        # from the provided fragmment, identify the doc to open (e.g. contains 'refusal')
+        #filename = search_for_doc_and_open(docfragment,docs_dict)
+        #print(filename)
+        
+        # if it can't find any file with 'refusal'/the name fragment in it, go to the next link in the loop
+        if filename == '' or filename == None:
+            continue
+
+        # Open the file you just downloaded by it's filename
+        open_path = download_path + filename
+        print('open path is: ' + open_path)
+
+        # wait for 5 seconds so the file you want to open is there before you try and open it
+        sleepy()
+        
+        file_ext = get_file_ext(filename)
+        full_doc = open_file_by_extension(open_path, file_ext)
+        print(filename)
+          
+
+        # define first strings to remove from the doc
+        first_removals = ['REFULZ','\n', 'IDOX/REOUTZ','REOUTZ','R1OUTZ','R1FULZ','RELDZ']
+        for thing in first_removals:
+            full_doc = full_doc.replace(thing,'')
+
+
+        # define the footer from start, end, text and whether or not to return the start and end strings in the result
+        footer = get_substring('DATED:','Officer)',full_doc,True,True)
+
+        #----------------------------TO DO--------------------------------
+        # NEED TO ACCOUNT FOR ALL POSSIBLE FOOTERS. One failed as was Service Director Planning and Sustainable Development, not officer
+
+        if footer == '':
+            footer = get_substring('DATED:','Development',full_doc,True,True)
+        #if footer == '':
+        #    footer = get_substring('DATED:','Director Planning and Sustainable  Development',full_doc,True,True)
+        #-----------------------------------------------------------------
+        print("footer is: ", footer)
+
+        # remove all instances of the footer from the doc
+        full_doc = full_doc.replace(footer,'')
+
+        # OLD - first identify the perm ref from it's position in a string
+        #perm_ref = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ','REASONS:', full_doc,False,False)
+        #print(perm_ref)
+        #perm_ref = perm_ref.replace(' ', '')
+  
+        
+        # -------------------------------------_TO DO __________________________________________
+        
+        
+        reasons_start_pattern = r'(?i)(reason:|reasons:|Reason\(s\):|Reason\(s\) for Refusal:)'
+        reasons_end_pattern = r'(?i)(relevant planning|first schedule|plans referred to in consideration)'
+        
+        # matches returns a list of all finds, so return first find
+        try:
+            reasons_start_matches = re.findall(reasons_start_pattern, full_doc)[0]
+            print('matched ', reasons_start_matches, ' through regex')
+        except:
+            # this won't match anything, but just adding a value to give it something to use
+            print('REASONS: by default at start')
+            reasons_start_matches = "REASONS:"
+        
+         # matches returns a list of all finds, so return first find
+        try:
+            reasons_end_matches = re.findall(reasons_end_pattern, full_doc)[0]
+            print('matched ', reasons_end_matches, ' through regex')
+            print(reasons_end_matches)
+        except:
+            # this won't match anything, but just adding a value to give it something to use
+            reasons_end_matches = "RELEVANT PLANNING"
+            print('RELEVANT PLANNING by default at end')
+        
+        print('reasons_start_matches: ', reasons_start_matches)
+        print('reasons_end_matches: ', reasons_end_matches)
+        
+        schedule = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ',reasons_start_matches, full_doc,True,False)
+        print("schedule is: ", schedule)
+        
+        # OLD - remove the subheading from all pages
+        #if case_dec == "Refusal one reason":
+        #    schedule = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ','REASON:', full_doc,True,False)
+        #elif case_dec == "Refused":
+        #    schedule = get_substring('SCHEDULE ATTACHED TO APPLICATION & DECISION NO: ','REASONS:', full_doc,True,False)
+
+        print(schedule)
+
+        full_doc = full_doc.replace(schedule,'')
+        
+        # change this to be 're.findall('re for 'Relevant planning policies, schedule attached to application,
+        # first schedule, plans referred to in consideration'
+        #refusal_reasons = get_substring(reasons_matches,'RELEVANT PLANNING',full_doc,False,False)
+        
+        refusal_reasons = get_substring(reasons_start_matches,reasons_end_matches,full_doc,False,False)
+        print('refusal reasons: ', refusal_reasons)
+        
+        # define the footer from start, end, text and exclude the end string as it marks end of reasons
+        #if case_dec == "Refused":
+        #    refusal_reasons = get_substring('REASONS:','RELEVANT PLANNING',full_doc,False,False)
+        #elif case_dec == "Refusal one reason":
+        #    refusal_reasons = get_substring('REASON:','RELEVANT PLANNING',full_doc,False,False)
+        #refusal_reasons
+
+        referenced_policies = get_substring('RELEVANT PLANNING POLICIES:','PLANS REFERRED TO',full_doc,False,False)
+
+
+        # Match the current permission with the intial search table and add the reasons
+        df.loc[df['Ref'] == perm_ref2, 'RefusalReasons'] = refusal_reasons
+        # Match the current permission with the intial search table and add the dev type
+        df.loc[df['Ref'] == perm_ref2, 'DevType'] = dev_type
+        # Match the current permission with the intial search table and add the dev type
+        #df.loc[df['Ref'] == perm_ref2, 'Policies'] = referenced_policies
+
+        df.loc[df['Ref'] == perm_ref2, 'docfragment'] = docfragment
+        df.loc[df['Ref'] == perm_ref2, 'file_ext'] = file_ext
+        df.loc[df['Ref'] == perm_ref2, 'filename'] = filename    
+        
+        if filename != '':
+            os.remove(open_path) # the open_path now includes the filename
+
+parse_text()
+
+add_perameters_to_df()
+
+df
+
+export_csv()
+
+driver.close()
+
+end = time.time()
+total_time = end - start
+print("\n"+ str(total_time))
+print('Total Time (mins): ' + str(total_time/60))
+print("Done")
