@@ -28,7 +28,7 @@ pd.set_option('display.max_colwidth', None)
 # Grab Currrent Time Before Running the Code
 start = time.time()
 
-download_path = "/Users/GlassShark1/Python/PDFS/"
+download_path = "/Users/dfs/"
 
 # These options ensure pdfs are downloaded as opposed to just opening in the web viewer, so you are able to 
 # work with them
