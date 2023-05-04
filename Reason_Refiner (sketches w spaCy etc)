@@ -26,7 +26,7 @@ nlp = spacy.load("en_core_web_lg")
 st = time.time()
 
 # load the dataframe from an excel file. For now keep an unedited copy and one to manipulate
-og_df = pd.read_excel("/Users/GlassShark1/Python/Refusals Data/All Refusals 2019-2022.xlsx")
+og_df = pd.read_excel("/Users/fdsf/file.xlsx")
 
 df = og_df.copy()
 
